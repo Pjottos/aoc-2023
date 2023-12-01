@@ -1,3 +1,5 @@
+#![feature(array_chunks)]
+
 use clap::Parser;
 use dotenvy::dotenv;
 
