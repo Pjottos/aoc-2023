@@ -1,0 +1,11 @@
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = true
+panic = "abort"
