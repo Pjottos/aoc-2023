@@ -21,9 +21,7 @@ session token. A .env file can be used to do this automatically.
 On a recent linux version and a Ryzen 5950X with 3600 MT/s DDR4 RAM.
 Times include "parsing", i.e. the benchmark measures from the moment the input file is in RAM.
 
--------------------------------
 | *Day* | *Part 1* | *Part 2* |
-|------------------------------
+|-------|----------|----------|
 |   1   |    3 µs  |    -     |
 |   2   |   13 µs  |   15 µs  |
-------------------------------
