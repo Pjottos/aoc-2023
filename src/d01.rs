@@ -56,26 +56,27 @@ pub fn run(h: &mut Harness) {
                 }
                 let mut low_mask = 0;
                 let mut high_mask = 0;
-                let mut shift = 0;
                 while newline_bits != 0 {
                     //println!("d: {digit_bits:032b}");
                     //println!("n: {is_newline_mask:032b}");
                     let newline_idx = newline_bits.trailing_zeros();
                     // Bits in this mask are set from the lsb up to the position of the first newline character
                     // Cannot overflow because we checked there is at least one newline bit
-                    let line_mask = (1_u32 << (newline_idx + shift)) - 1;
-                    shift += newline_idx + 1;
-                    // We need to shift to use leading/trailing zero counts
-                    newline_bits = newline_bits.checked_shr(newline_idx + 1).unwrap_or(0);
+                    let newline_bit = 1_u32 << newline_idx;
+                    let line_mask = newline_bit - 1;
+                    // We need to clear the bit to keep using leading/trailing zero counts
+                    newline_bits &= !newline_bit;
                     //println!("{line_mask:032b}");
                     // Find the last digit in a line, closest to the newline on the right
                     let low_digit = 0x80000000_u32
                         .checked_shr((digit_bits & line_mask).leading_zeros())
                         .unwrap_or_else(|| {
                             // The digit is not in this chunk, luckily we jotted down the index when we were processing the
-                            // chunk that did have it
+                            // chunk that did have it.
+                            // We use get_unchecked because the potential side effect from panicking on the bounds check
+                            // causes this block to compile as a branch.
+                            final_sum_low += u32::from(*bytes.get_unchecked(last_digit_idx) - b'0');
                             //println!("using {last_digit_idx} for last digit");
-                            final_sum_low += u32::from(bytes[last_digit_idx] - b'0');
                             0
                         });
                     low_mask |= low_digit;
@@ -140,7 +141,7 @@ pub fn run(h: &mut Harness) {
 
             final_sum_low + (final_sum_high * 10)
         })
-        .run_part(2, |text| {});
+        .run_part(2, |_text| {});
 }
 
 fn horizontal_sum(bytes: __m256i) -> u16 {
