@@ -11,7 +11,7 @@ fn get_first_and_last_bitmask(mask: u32) -> (u32, u32) {
     (1 << first_idx, (u32::MAX << (u32::BITS - 1)) >> last_idx)
 }
 
-pub fn solve_iter(mut input: &[u8], last: Option<u8>) -> (u32, u32) {
+pub fn solve_iter(mut input: &[u8], last: Option<u32>) -> (u32, u32) {
     if input.is_empty() {
         return (0, 0);
     };
@@ -29,8 +29,8 @@ pub fn solve_iter(mut input: &[u8], last: Option<u8>) -> (u32, u32) {
             .iter()
             .copied()
             .rfind(|&b| b <= b'9')
-            .map(|b| b - b'0')
-            .unwrap_or(last) as u32
+            .map(|b| (b - b'0') as u32)
+            .unwrap_or(last)
     } else {
         0
     };
@@ -54,7 +54,7 @@ pub fn run(h: &mut Harness) {
             let mut chunks = bytes.array_chunks::<32>();
 
             // Digits carried over from the end of the previous chunk, Some(last)
-            let mut state: Option<u8> = None;
+            let mut state = None;
 
             // 8 bit sums, needs to be flushed every 28 chunks to prevent overflow
             let mut sum_first = zero;
@@ -64,8 +64,6 @@ pub fn run(h: &mut Harness) {
             let mut total_last: u32 = 0;
 
             for (iter, chunk) in chunks.by_ref().enumerate() {
-                // let mut chunk = chunk.clone();
-                // let chunk = &chunk;
                 // SAFETY: loadu has no alignment requirement
                 let raw = _mm256_loadu_si256(chunk.as_ptr().cast());
 
@@ -98,7 +96,7 @@ pub fn run(h: &mut Harness) {
                             // If we haven't saved the first digit yet
                             first_digits |= first_mask;
                         }
-                        state = Some(chunk[last_idx as usize] - b'0');
+                        state = Some((chunk[last_idx as usize] - b'0') as u32);
                         // We have consumed all digits
                         break;
                     }
