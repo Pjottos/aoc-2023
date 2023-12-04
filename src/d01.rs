@@ -18,11 +18,13 @@ pub fn solve_iter(mut input: &[u8], last: Option<u8>) -> (u32, u32) {
     let last = if let Some(last) = last {
         let skip = input
             .iter()
+            // SAFETY: skip < input.len()
             .position(|&b| b == b'\n')
+            // SAFETY: skip + 1 == input.len()
             .unwrap_or(input.len() - 1);
-        let chunk;
-        (chunk, input) = input.split_at(skip + 1);
-        let chunk = &chunk[..skip];
+        // SAFETY: skip and skip + 1 are both <= input.len()
+        let chunk = unsafe { input.get_unchecked(..skip) };
+        input = unsafe { input.get_unchecked(skip + 1..) };
         chunk
             .iter()
             .copied()
