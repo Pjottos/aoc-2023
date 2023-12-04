@@ -25,7 +25,8 @@ impl Drop for Harness {
 impl Harness {
     fn input_layout(len: usize) -> Layout {
         let align = 64;
-        let size = (len + align - 1) & !(align - 1);
+        // In addition to rounding up to the alignment, we also add padding so we can safely read past the end
+        let size = (len + (align - 1) * 2) & !(align - 1);
         Layout::from_size_align(size, align).unwrap()
     }
 
