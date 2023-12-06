@@ -2,152 +2,165 @@ use crate::harness::Harness;
 
 use std::arch::x86_64::*;
 
+fn get_first_and_last_bitmask(mask: u32) -> (u32, u32) {
+    if mask == 0 {
+        return (0, 0);
+    };
+    let first_idx = mask.trailing_zeros();
+    let last_idx = mask.leading_zeros();
+    (1 << first_idx, (u32::MAX << (u32::BITS - 1)) >> last_idx)
+}
+
+pub fn solve_iter(mut input: &[u8], last: Option<u32>) -> (u32, u32) {
+    if input.is_empty() {
+        return (0, 0);
+    };
+    let last = if let Some(last) = last {
+        let skip = input
+            .iter()
+            // SAFETY: skip < input.len()
+            .position(|&b| b == b'\n')
+            // SAFETY: skip + 1 == input.len()
+            .unwrap_or(input.len() - 1);
+        // SAFETY: skip and skip + 1 are both <= input.len()
+        let chunk = unsafe { input.get_unchecked(..skip) };
+        input = unsafe { input.get_unchecked(skip + 1..) };
+        chunk
+            .iter()
+            .copied()
+            .rfind(|&b| b <= b'9')
+            .map(|b| (b - b'0') as u32)
+            .unwrap_or(last)
+    } else {
+        0
+    };
+    input
+        .split(|&b| b == b'\n')
+        .map(|line| {
+            let mut iter = line.iter().copied();
+            let first = iter.find(|&b| b <= b'9').unwrap_or(b'0');
+            let last = iter.rfind(|&b| b <= b'9').unwrap_or(first);
+            ((first - b'0') as u32, (last - b'0') as u32)
+        })
+        .fold((0, last), |(first, last), (nf, nl)| (first + nf, last + nl))
+}
+
 pub fn run(h: &mut Harness) {
     h.begin(1)
         .run_part(1, |text| unsafe {
-            // 8 bit sums, needs to be flushed every 28 chunks to prevent overflow
-            let mut sum_low = _mm256_setzero_si256();
-            let mut sum_high = _mm256_setzero_si256();
-            let mut final_sum_low = 0;
-            let mut final_sum_high = 0;
-            let mut last_digit_idx = 0;
-            let mut need_high_digit = false;
+            let zero = _mm256_setzero_si256();
+
             let bytes = text.as_bytes();
-            let chunks = bytes.array_chunks::<32>();
+            let mut chunks = bytes.array_chunks::<32>();
 
-            // We need to kickstart with scalar code to find the first digit in the first line
-            for (i, &b) in bytes.iter().enumerate() {
-                assert!(b != b'\n');
-                let digit = b.wrapping_sub(b'0');
-                if digit <= 9 {
-                    final_sum_high += u32::from(digit);
-                    last_digit_idx = i;
-                    break;
-                }
-            }
-            // Make sure we found the first digit
-            assert!(final_sum_high != 0);
+            // Digits carried over from the end of the previous chunk, Some(last)
+            let mut state = None;
 
-            for (i, chunk) in chunks.clone().enumerate() {
-                // SAFETY: the harness ensures that the input is aligned to 64 bytes
-                let raw = _mm256_load_si256(chunk.as_ptr() as *const _);
-                let is_newline = _mm256_cmpeq_epi8(raw, _mm256_set1_epi8(b'\n' as i8));
-                let is_newline_mask = _mm256_movemask_epi8(is_newline) as u32;
-                let new_digit = _mm256_sub_epi8(raw, _mm256_set1_epi8(b'0' as i8));
+            // 8 bit sums, needs to be flushed every 28 chunks to prevent overflow
+            let mut sum_first = zero;
+            let mut sum_last = zero;
 
-                // AVX2 doesn't have unsigned compare so unfortunately we have to make 2 comparisons
-                let is_valid = _mm256_and_si256(
-                    _mm256_cmpgt_epi8(new_digit, _mm256_set1_epi8(-1)),
-                    _mm256_cmpgt_epi8(_mm256_set1_epi8(10), new_digit),
-                );
-                let is_valid_mask = _mm256_movemask_epi8(is_valid) as u32;
+            let mut total_first: u32 = 0;
+            let mut total_last: u32 = 0;
 
-                // Calculate the mask for low and high sums
-                // We are silently ignoring lines that don't have any digits as they do not have a number to contribute to the
-                // final sum. It be desirable to error out if that happens
-                let mut newline_bits = is_newline_mask;
-                let digit_bits = is_valid_mask;
-                if need_high_digit {
-                    let next_idx = digit_bits.trailing_zeros();
-                    if next_idx != 32 {
-                        final_sum_high += u32::from(bytes[(i * 32) + next_idx as usize] - b'0');
-                        need_high_digit = false;
+            for (iter, chunk) in chunks.by_ref().enumerate() {
+                // SAFETY: loadu has no alignment requirement
+                let raw = _mm256_loadu_si256(chunk.as_ptr().cast());
+
+                let newlines = _mm256_cmpeq_epi8(raw, _mm256_set1_epi8(b'\n' as i8));
+                let mut newlines = _mm256_movemask_epi8(newlines) as u32;
+
+                let vdigits = _mm256_sub_epi8(raw, _mm256_set1_epi8(b'0' as i8));
+                let vdigit_mask = _mm256_add_epi8(raw, _mm256_set1_epi8(i8::MAX - b'9' as i8));
+                let vdigit_mask = _mm256_cmpgt_epi8(vdigit_mask, _mm256_set1_epi8(i8::MAX - 10));
+                let digit_mask = _mm256_movemask_epi8(vdigit_mask) as u32;
+
+                // The bitmasks of first and last digits to be extracted
+                let mut first_digits = 0;
+                let mut last_digits = 0;
+
+                let mut remaining_digits = digit_mask;
+
+                while remaining_digits != 0 {
+                    // We have more digits to process
+
+                    if newlines == 0 {
+                        // This is a partial line
+                        // We need to consume every digit on the line
+
+                        let (first_mask, _last_mask) = get_first_and_last_bitmask(remaining_digits);
+                        // SAFETY: Must be < 32 as remaining_digits != 0, therefore some bit has to
+                        // be set
+                        let last_idx = 31 - remaining_digits.leading_zeros();
+                        if state.is_none() {
+                            // If we haven't saved the first digit yet
+                            first_digits |= first_mask;
+                        }
+                        state = Some((chunk[last_idx as usize] - b'0') as u32);
+                        // We have consumed all digits
+                        break;
                     }
-                }
-                let mut low_mask = 0;
-                let mut high_mask = 0;
-                while newline_bits != 0 {
-                    //println!("d: {digit_bits:032b}");
-                    //println!("n: {is_newline_mask:032b}");
-                    let newline_idx = newline_bits.trailing_zeros();
-                    // Bits in this mask are set from the lsb up to the position of the first newline character
-                    // Cannot overflow because we checked there is at least one newline bit
-                    let newline_bit = 1_u32 << newline_idx;
-                    let line_mask = newline_bit - 1;
-                    // We need to clear the bit to keep using leading/trailing zero counts
-                    newline_bits &= !newline_bit;
-                    //println!("{line_mask:032b}");
-                    // Find the last digit in a line, closest to the newline on the right
-                    let low_digit = 0x80000000_u32
-                        .checked_shr((digit_bits & line_mask).leading_zeros())
-                        .unwrap_or_else(|| {
-                            // The digit is not in this chunk, luckily we jotted down the index when we were processing the
-                            // chunk that did have it.
-                            // We use get_unchecked because the potential side effect from panicking on the bounds check
-                            // causes this block to compile as a branch.
-                            final_sum_low += u32::from(*bytes.get_unchecked(last_digit_idx) - b'0');
-                            //println!("using {last_digit_idx} for last digit");
-                            0
-                        });
-                    low_mask |= low_digit;
-                    //println!("l: {low_digit:032b}");
-                    // Find the first digit in the next line
-                    let high_digit = 1_u32
-                        .checked_shl((digit_bits & !line_mask).trailing_zeros())
-                        .unwrap_or_else(|| {
-                            // Set a flag to account for the high digit when we find it in a future chunk
-                            need_high_digit = true;
-                            0
-                        });
-                    high_mask |= high_digit;
-                    //println!("h: {high_digit:032b}");
-                    //println!();
-                }
-                // In the best case each chunk has one newline and a digit at both sides of the newline but because the lines are
-                // variably sized we need to be able to refer back to the digits at the outsides of chunks in case the newline
-                // is not in the same chunk as either digit
-                let last_idx = digit_bits.leading_zeros();
-                if last_idx != 32 {
-                    last_digit_idx = (i * 32) + (31 - last_idx as usize);
-                }
+                    // Get the bit index of the newline
+                    let newline_idx = newlines.trailing_zeros();
+                    // Get the mask for all digits before the first newline
+                    let up_to_newline = u32::MAX >> (31 - newline_idx);
+                    // print_mask("bytes up to newline", up_to_newline);
+                    let digits_before_newline = up_to_newline & remaining_digits;
+                    // print_mask("digits before newline", digits_before_newline);
+                    let (mut first_mask, last_mask) =
+                        get_first_and_last_bitmask(digits_before_newline);
+                    if let Some(state) = state {
+                        // We had a digit saved, that means our "first" digit isn't really the
+                        // first.
+                        first_mask = 0;
+                        if last_mask == 0 {
+                            // We didn't find a new last digit, use the one we saved
+                            total_last += state as u32;
+                        }
+                    }
 
-                //println!("{low_mask:032b}");
-                //println!("{high_mask:032b}");
-                let low = widen_mask(low_mask);
-                sum_low = _mm256_add_epi8(sum_low, _mm256_and_si256(new_digit, low));
-                let high = widen_mask(high_mask);
-                sum_high = _mm256_add_epi8(sum_high, _mm256_and_si256(new_digit, high));
+                    first_digits |= first_mask;
+                    last_digits |= last_mask;
+                    // The line terminates here
+                    state = None;
+                    // Consume all digits before newline
+                    remaining_digits ^= digits_before_newline;
+                    // Consume newline
+                    newlines &= !(up_to_newline);
+                }
+                if newlines != 0 {
+                    // Some newlines were not captured. Save the last state
+                    total_last += state.take().unwrap_or(0) as u32;
+                }
+                let first_digits = _mm256_blendv_epi8(zero, vdigits, widen_mask(first_digits));
 
-                // Theoretically, the worst case value of 9, 29 times (261) would overflow a 8 bit simd sum element
-                // so we accumulate into a larger sum to be safe
-                if i % 28 == 27 {
-                    final_sum_high += u32::from(horizontal_sum(sum_high));
-                    final_sum_low += u32::from(horizontal_sum(sum_low));
-                    sum_high = _mm256_setzero_si256();
-                    sum_low = _mm256_setzero_si256();
+                let last_digits = _mm256_blendv_epi8(zero, vdigits, widen_mask(last_digits));
+
+                sum_first = _mm256_add_epi8(sum_first, first_digits);
+                sum_last = _mm256_add_epi8(sum_last, last_digits);
+                if iter % 28 == 27 {
+                    total_first += horizontal_sum(sum_first) as u32;
+                    total_last += horizontal_sum(sum_last) as u32;
+                    sum_first = zero;
+                    sum_last = zero;
                 }
             }
-
-            final_sum_high += u32::from(horizontal_sum(sum_high));
-            final_sum_low += u32::from(horizontal_sum(sum_low));
-
-            let mut digit = 0;
-            for &b in chunks.remainder() {
-                let is_newline = b == b'\n';
-                let new_digit = b.wrapping_sub(b'0');
-                let is_valid = new_digit <= 9;
-                if is_valid {
-                    digit = new_digit;
-                }
-                if need_high_digit && is_valid {
-                    final_sum_high += u32::from(new_digit);
-                    need_high_digit = false;
-                }
-                if is_newline {
-                    final_sum_low += u32::from(digit);
-                    need_high_digit = true;
-                }
-            }
-
-            final_sum_low + (final_sum_high * 10)
+            total_first += horizontal_sum(sum_first) as u32;
+            total_last += horizontal_sum(sum_last) as u32;
+            let last = state.take();
+            let rem = chunks.remainder();
+            let (first, last) = solve_iter(rem, last);
+            total_first += first;
+            total_last += last;
+            total_first * 10 + total_last
         })
-        .run_part(2, |_text| {});
+        .run_part(2, |text| {});
 }
 
-fn horizontal_sum(bytes: __m256i) -> u16 {
+fn horizontal_sum(vector: __m256i) -> u16 {
     unsafe {
-        let lo = _mm256_unpacklo_epi8(bytes, _mm256_setzero_si256());
-        let hi = _mm256_unpackhi_epi8(bytes, _mm256_setzero_si256());
+        let lo = _mm256_unpacklo_epi8(vector, _mm256_setzero_si256());
+        let hi = _mm256_unpackhi_epi8(vector, _mm256_setzero_si256());
         let sum1 = _mm256_add_epi16(lo, hi);
         let sum2 = _mm_add_epi16(
             _mm256_extracti128_si256::<0>(sum1),
