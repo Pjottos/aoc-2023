@@ -3,93 +3,79 @@ use crate::harness::Harness;
 pub fn run(h: &mut Harness) {
     h.begin(6)
         .run_part(1, |text| {
-            let mut races = vec![];
-            for line in text.lines() {
-                let mut parts = line.split_ascii_whitespace();
-                let name = parts.next().unwrap();
-                if name == "Time:" {
-                    races.extend(parts.map(|n| (n.parse::<u32>().unwrap(), 0)));
-                } else if name == "Distance:" {
-                    races
-                        .iter_mut()
-                        .zip(parts.map(|n| n.parse::<u32>().unwrap()))
-                        .for_each(|(race, n)| race.1 = n);
+            // Any overhead hurts on such a tiny amount of computation
+            let bytes = text.as_bytes();
+            assert_eq!(bytes.len(), 74);
+            let mut times = [0; 4];
+            let mut records = [0; 4];
+            for r in 0..4 {
+                let mut num = 0;
+                for d in 0..4 {
+                    let digit = bytes[11 + (r * 7) + d] & 0x0F;
+                    num = (num * 10) + u32::from(digit);
                 }
+                times[r] = num;
+                num = 0;
+                for d in 0..4 {
+                    let digit = bytes[37 + 11 + (r * 7) + d] & 0x0F;
+                    num = (num * 10) + u32::from(digit);
+                }
+                records[r] = num;
             }
 
-            let mut product = None;
-            for (time, record) in races {
-                // Travelled distance can be expressed as:
-                // d = x(T - x)
-                //   = -x^2 + Tx
-                // Where x is the amount of time we hold the button and T is the time allocated for this race
-                // We care about the maximum of this function so we solve for the derivative
-                // 0 = -2x + T
-                // x = (1/2)T
-                let optimal_x = time / 2;
-                let optimal_d = optimal_x * (time - optimal_x);
-                // Now we need to scan what value of x was used for the record
-                let mut win_ways = (optimal_d > record) as u32;
-                for i in 1..optimal_x {
-                    let a = optimal_x - i;
-                    let b = optimal_x + i;
-                    let distance_a = a * (time - a);
-                    let distance_b = b * (time - b);
-                    let old = win_ways;
-                    if distance_a > record {
-                        win_ways += 1;
-                    }
-                    if distance_b > record {
-                        win_ways += 1;
-                    }
-                    if win_ways == old {
-                        break;
-                    }
-                }
-                if let Some(p) = product.as_mut() {
-                    *p *= win_ways;
-                } else {
-                    product = Some(win_ways);
-                }
+            let mut product = 1;
+            for i in 0..4 {
+                let time = u64::from(times[i]);
+                let record = u64::from(records[i]);
+                product *= win_ways(time, record);
             }
 
-            product.unwrap()
+            product
         })
         .run_part(2, |text| {
-            let mut lines = text.lines();
-            let mut time = lines.next().unwrap().to_string();
-            time.retain(|c| c.is_ascii_digit());
-            let time = time.parse::<u64>().unwrap();
-            let mut record = lines.next().unwrap().to_string();
-            record.retain(|c| c.is_ascii_digit());
-            let record = record.parse::<u64>().unwrap();
-            // Travelled distance can be expressed as:
-            // d = x(T - x)
-            //   = -x^2 + Tx
-            // Where x is the amount of time we hold the button and T is the time allocated for this race
-            // We care about the maximum of this function so we solve for the derivative
-            // 0 = -2x + T
-            // x = (1/2)T
-            let optimal_x = time / 2;
-            let optimal_d = optimal_x * (time - optimal_x);
-            // Now we need to scan what value of x was used for the record
-            let mut win_ways = (optimal_d > record) as u32;
-            for i in 1..optimal_x {
-                let a = optimal_x - i;
-                let b = optimal_x + i;
-                let distance_a = a * (time - a);
-                let distance_b = b * (time - b);
-                let old = win_ways;
-                if distance_a > record {
-                    win_ways += 1;
-                }
-                if distance_b > record {
-                    win_ways += 1;
-                }
-                if win_ways == old {
-                    break;
+            let bytes = text.as_bytes();
+            assert_eq!(bytes.len(), 74);
+
+            let mut time = 0;
+            for i in 11..36 {
+                if bytes[i] & 0x10 != 0 {
+                    time = (time * 10) + u64::from(bytes[i] & 0xF)
                 }
             }
-            win_ways
+            let mut record = 0;
+            for i in 37 + 11..74 {
+                if bytes[i] & 0x10 != 0 {
+                    record = (record * 10) + u64::from(bytes[i] & 0xF)
+                }
+            }
+
+            win_ways(time, record)
         });
+}
+
+fn win_ways(time: u64, record: u64) -> u64 {
+    // Travelled distance can be expressed as:
+    // d = x(T - x)
+    //   = -x^2 + Tx
+    // Where x is the amount of time we hold the button and T is the time allocated for this race
+    // We want to split this function in 2 monotonic parts, so we solve for the derivative
+    // 0 = -2x + T
+    // 2x = T
+    // x = (1/2)T
+
+    // This is the theoretical best time to hold the button but we have to account for the fact it may not
+    // be integer. It may be 0.5 below the actual best time
+    let optimal_x = time / 2;
+    // Now we find the highest integer time that beats the record
+    let max_bit = optimal_x.ilog2();
+    let mut x = optimal_x;
+    for bit in (0..=max_bit).rev() {
+        let a = x + (1 << bit);
+        let distance = a * (time - a);
+        if distance > record {
+            x = a;
+        }
+    }
+    // For even time values we can also attain optimal_x
+    ((x - optimal_x) * 2) + ((time + 1) & 1)
 }
