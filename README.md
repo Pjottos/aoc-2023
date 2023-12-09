@@ -31,4 +31,4 @@ Times include "parsing", i.e. the benchmark measures from the moment the input f
 |   6   |  22 **n**s |  18 **n**s |
 |   7   |  72.6 µs |  70.3 µs |
 |   8   |   1.3 µs |   1.8 µs |
-|   9   |  34.7 µs |  29.4 µs |
+|   9   |  17.6 µs |  17.2 µs |
